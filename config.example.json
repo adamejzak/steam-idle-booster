@@ -1,0 +1,13 @@
+{
+  "account": {
+    "username": "login",
+    "password": "password",
+    "shared_secret": null,
+    "api_key": "0123456789ABCDEF0123456789ABCDEF",
+    "steam_id": "76561198000000000"
+  },
+  "games": [730, 570],
+  "language": "pl"
+}
+
+
