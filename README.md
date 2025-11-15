@@ -15,7 +15,6 @@ The menu-driven workflow stores configuration in `config.json` and works on both
 
 ### Windows (PowerShell)
 ```powershell
-cd C:\Users\HP\Documents\adam\steam-hour-py
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -23,7 +22,6 @@ pip install -r requirements.txt
 
 ### Linux/macOS (bash)
 ```bash
-cd ~/steam-hour-py
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -41,10 +39,10 @@ Menu features:
 2. Enter Steam login/password
 3. Set `shared_secret` for automatic 2FA codes
 4. Manage the AppID list (up to 33 entries) manually or by importing from your Steam library
-5. Start the booster (logs into Steam and pretends to play selected games)
+5. Start the script (logs into Steam and pretends to play selected games)
 
 A `config.json` file is created on the first run.  
-Press Enter or `Ctrl+C` to stop the booster.
+Press Enter or `Ctrl+C` to stop the script.
 
 ## Interface Language
 

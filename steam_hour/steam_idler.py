@@ -51,7 +51,7 @@ class SteamIdler:
         print(self.t("steam.connecting"))
         try:
             self._login_loop()
-        except KeyboardInterrupt as exc:  # allow graceful exit
+        except KeyboardInterrupt as exc: 
             raise SteamRunError(self.t("steam.interrupt")) from exc
         LOG.info("Ustawianie statusu Online i uruchamianie %d gier.", len(games))
         self._set_persona_online()

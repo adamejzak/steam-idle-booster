@@ -10,8 +10,7 @@ STEAM_VANITY_URL = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/
 
 
 class SteamLibraryError(RuntimeError):
-
-
+    """Raised when Steam library data cannot be fetched or parsed."""
 @dataclass
 class OwnedGame:
     app_id: int
