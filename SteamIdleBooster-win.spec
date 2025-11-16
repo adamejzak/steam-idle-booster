@@ -1,17 +1,11 @@
-import os
-from pathlib import Path
+# -*- mode: python ; coding: utf-8 -*-
 
-icon_data = []
-icon_file = None
-if os.path.exists('icon.ico'):
-    icon_data = [('icon.ico', '.')]
-    icon_file = str(Path('icon.ico').resolve())
 
 a = Analysis(
     ['gui_main.py'],
     pathex=[],
     binaries=[],
-    datas=icon_data,
+    datas=[('icon.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -28,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='SteamIdleBooster-win64',
+    name='SteamIdleBooster-win',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon_file,
+    icon=['icon.ico'],
 )

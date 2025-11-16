@@ -7,6 +7,8 @@ import signal
 import threading
 import time
 from datetime import timedelta
+import json
+import re
 from pathlib import Path
 from typing import Iterable, List, Protocol
 
@@ -22,9 +24,20 @@ from .config_models import MAX_SIMULTANEOUS_GAMES, AppConfig
 from .localization import Localization
 
 LOG = logging.getLogger("steam_hour.idler")
-CUSTOM_STATUS_TEXT = "ejzak.pl/hourboost"
 _ORIGINAL_LOGGING_SHUTDOWN = logging.shutdown
 _ORIGINAL_HANDLER_RELEASE = logging.Handler.release
+DEFAULT_CREDENTIAL_DIR = Path(".steam_credentials")
+LOGIN_KEY_PREFIX = "login_key_"
+
+
+def _sanitize_username(value: str) -> str:
+    if not value:
+        return "default"
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value)
+
+
+def _login_key_path(base_dir: Path, username: str) -> Path:
+    return base_dir / f"{LOGIN_KEY_PREFIX}{_sanitize_username(username)}.json"
 
 
 def _safe_logging_shutdown() -> None:
@@ -118,15 +131,18 @@ class SteamIdler:
         localization: Localization | None = None,
         credential_dir: str | Path | None = None,
         ui: IdlerUI | None = None,
+        keep_session: bool = False,
     ) -> None:
         self.config = config
         self.localization = localization or Localization(config.language or None)
-        self.credential_dir = Path(credential_dir or Path(".steam_credentials"))
+        self.credential_dir = Path(credential_dir or DEFAULT_CREDENTIAL_DIR)
         self.credential_dir.mkdir(parents=True, exist_ok=True)
         self.client = SteamClient()
         self.client.set_credential_location(str(self.credential_dir))
         self.ui: IdlerUI = ui or ConsoleIdlerUI()
         self.app_directory = SteamAppDirectory()
+        self.keep_session = keep_session
+        self._last_username: str = ""
 
     def start(self) -> None:
         games = self._prepare_games(self.config.games)
@@ -182,18 +198,26 @@ class SteamIdler:
             if prompt_thread and not interrupted:
                 prompt_thread.join()
             clock_thread.join()
-            self.client.logout()
-            self.ui.log(self.t("steam.logout"))
+            self._set_games_played([])
+            if not self.keep_session:
+                self.client.logout()
+                self.ui.log(self.t("steam.logout"))
+                LOG.info("Wylogowano ze Steam.")
+            else:
+                self.ui.log(self.t("steam.session.persisted"))
+                LOG.info("Sesja Steam pozostaje aktywna.")
             self._shutdown_gevent_hub()
-            LOG.info("Wylogowano ze Steam.")
 
     def authenticate_only(self) -> None:
         """Log into Steam without starting the booster to refresh credentials."""
         self.ui.log(self.t("steam.connecting"))
         self._login_loop()
         self.ui.log(self.t("steam.login.auth_only_success"))
-        self.client.logout()
-        self.ui.log(self.t("steam.logout"))
+        if not self.keep_session:
+            self.client.logout()
+            self.ui.log(self.t("steam.logout"))
+        else:
+            self.ui.log(self.t("steam.session.persisted"))
         self._shutdown_gevent_hub()
 
     def _prepare_games(self, games: Iterable[int]) -> List[int]:
@@ -209,12 +233,22 @@ class SteamIdler:
         username = self.config.account.username
         password = self.config.account.password
         shared_secret = self.config.account.shared_secret
+        self._last_username = username or ""
 
         if not username or not password:
             raise SteamLoginError(self.t("steam.login.credentials_missing"))
 
         auth_code: str | None = None
         two_factor_code: str | None = None
+        cached_key = self._load_login_key(username)
+        if cached_key:
+            result = self.client.login(username=username, login_key=cached_key)
+            if result == EResult.OK:
+                self._save_login_key(username)
+                self.ui.log(self.t("steam.login.success"))
+                return
+            LOG.info("Stored login key invalid (result=%s); falling back to password.", result)
+            self._delete_login_key(username)
 
         while True:
             if shared_secret and not two_factor_code:
@@ -230,6 +264,7 @@ class SteamIdler:
                 two_factor_code=two_factor_code,
             )
             if result == EResult.OK:
+                self._save_login_key(username)
                 self.ui.log(self.t("steam.login.success"))
                 return
             if result == EResult.AccountLogonDenied:
@@ -260,6 +295,51 @@ class SteamIdler:
                 self.config.account.password = password
                 continue
             raise SteamLoginError(self.t("steam.login.error_generic", result=result.name))
+
+    def _load_login_key(self, username: str) -> str | None:
+        if not username:
+            return None
+        path = _login_key_path(self.credential_dir, username)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+        token = payload.get("login_key")
+        if not token:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+        return str(token)
+
+    def _save_login_key(self, username: str) -> None:
+        if not username:
+            return
+        login_key = getattr(self.client, "login_key", None)
+        if not login_key:
+            return
+        payload = {"login_key": login_key, "updated_at": int(time.time())}
+        path = _login_key_path(self.credential_dir, username)
+        try:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError:
+            LOG.debug("Failed to persist login_key for %s", username)
+
+    def _delete_login_key(self, username: str) -> None:
+        if not username:
+            return
+        path = _login_key_path(self.credential_dir, username)
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
     def _set_persona_online(self) -> None:
         """Try multiple APIs to set persona so the account appears online."""
@@ -342,6 +422,40 @@ class SteamIdler:
 
     def _format_games_preview(self, games: Iterable[int]) -> str:
         return ", ".join(self.app_directory.format_entry(app_id) for app_id in games)
+
+    @staticmethod
+    def has_cached_session(
+        username: str | None = None, credential_dir: str | Path | None = None
+    ) -> bool:
+        target = Path(credential_dir or DEFAULT_CREDENTIAL_DIR)
+        if not target.exists():
+            return False
+        if username:
+            return _login_key_path(target, username).exists()
+        try:
+            return any(target.glob(f"{LOGIN_KEY_PREFIX}*.json"))
+        except OSError:
+            return False
+
+    @staticmethod
+    def clear_cached_session(
+        username: str | None = None, credential_dir: str | Path | None = None
+    ) -> None:
+        target = Path(credential_dir or DEFAULT_CREDENTIAL_DIR)
+        if not target.exists():
+            return
+        if username:
+            path = _login_key_path(target, username)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        for entry in list(target.glob(f"{LOGIN_KEY_PREFIX}*.json")):
+            try:
+                entry.unlink()
+            except OSError:
+                continue
 
 
 

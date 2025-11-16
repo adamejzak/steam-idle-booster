@@ -4,14 +4,14 @@ import queue
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
-    import qdarktheme  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - optional dependency
+    import qdarktheme
+except ImportError:
     qdarktheme = None
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPalette
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, QUrl
+from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPalette, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QGroupBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -38,12 +38,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .app_directory import SteamAppDirectory
+from .app_directory import SteamAppDirectory, format_app_display
 from .config_manager import ConfigManager
 from .config_models import AppConfig, ConfigValidationError, MAX_SIMULTANEOUS_GAMES
-from .library import SteamLibraryError, SteamLibraryFetcher
+from .library import LIBRARY_ERROR_UNAUTHORIZED, SteamLibraryError, SteamLibraryFetcher
 from .localization import DEFAULT_LANGUAGE, Localization, SUPPORTED_LANGUAGES
-from .steam_idler import SteamIdler
+from .steam_idler import PromptCancelled, SteamIdler
+from .version import CURRENT_VERSION, REPOSITORY_URL, fetch_latest_version, is_newer_version
 
 
 def _get_icon_path() -> Path | None:
@@ -144,7 +145,7 @@ class GuiIdlerUI(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._prompt_queue: queue.Queue[str] | None = None
+        self._prompt_queue: queue.Queue[Tuple[str, bool]] | None = None
         self._prompt_lock = threading.Lock()
         self._stop_event: threading.Event | None = None
 
@@ -170,22 +171,25 @@ class GuiIdlerUI(QObject):
             self._stop_event.set()
         with self._prompt_lock:
             if self._prompt_queue and self._prompt_queue.empty():
-                self._prompt_queue.put("")
+                self._prompt_queue.put(("", False))
                 self._prompt_queue = None
 
-    def submit_prompt_response(self, value: str) -> None:
+    def submit_prompt_response(self, value: str, *, cancelled: bool = False) -> None:
         with self._prompt_lock:
             queue_ref = self._prompt_queue
         if queue_ref is not None:
-            queue_ref.put(value)
+            queue_ref.put((value, cancelled))
 
     def _request_input(self, prompt: str, *, secret: bool) -> str:
-        response_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+        response_queue: queue.Queue[Tuple[str, bool]] = queue.Queue(maxsize=1)
         with self._prompt_lock:
             self._prompt_queue = response_queue
         self.prompt_requested.emit(prompt, secret)
         try:
-            return response_queue.get()
+            value, cancelled = response_queue.get()
+            if cancelled:
+                raise PromptCancelled()
+            return value
         finally:
             with self._prompt_lock:
                 self._prompt_queue = None
@@ -203,10 +207,10 @@ class IdlerWorker(QThread):
 
     def run(self) -> None:
         try:
-            idler = SteamIdler(self.config, localization=self.localization, ui=self.ui)
+            idler = SteamIdler(self.config, localization=self.localization, ui=self.ui, keep_session=True)
             idler.start()
             self.finished_success.emit()
-        except Exception as exc:  # pragma: no cover - GUI worker
+        except Exception as exc:
             self.failed.emit(str(exc))
 
 
@@ -239,6 +243,17 @@ class LibraryFetchWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class VersionCheckWorker(QThread):
+    update_available = Signal(str)
+
+    def run(self) -> None:
+        latest = fetch_latest_version()
+        if self.isInterruptionRequested():
+            return
+        if latest and is_newer_version(latest):
+            self.update_available.emit(latest)
+
+
 class LibrarySelectionDialog(QDialog):
     def __init__(
         self,
@@ -260,11 +275,12 @@ class LibrarySelectionDialog(QDialog):
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.MultiSelection)
         for app_id, name in games:
-            item = QListWidgetItem(f"{name} ({app_id})")
+            label = format_app_display(app_id, name)
+            item = QListWidgetItem(label)
             item.setData(Qt.UserRole, app_id)
             if app_id in existing:
                 item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
-                item.setText(f"[*] {name} ({app_id})")
+                item.setText(f"[*] {label}")
             self.list_widget.addItem(item)
         layout.addWidget(self.list_widget)
 
@@ -278,6 +294,54 @@ class LibrarySelectionDialog(QDialog):
 
     def t(self, key: str, **kwargs: object) -> str:
         return self.localization.translate(key, **kwargs)
+
+
+class PromptDialog(QDialog):
+    def __init__(
+        self,
+        localization: Localization,
+        prompt: str,
+        *,
+        secret: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.localization = localization
+        self.setWindowTitle(self.t("gui.dialog.info"))
+        layout = QVBoxLayout(self)
+
+        self.prompt_label = QLabel(prompt)
+        self.prompt_label.setWordWrap(True)
+        layout.addWidget(self.prompt_label)
+
+        self.input_field = QLineEdit()
+        if secret:
+            self.input_field.setEchoMode(QLineEdit.Password)
+        layout.addWidget(self.input_field)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        ok_button.setText(self.t("gui.buttons.ok"))
+        cancel_button.setText(self.t("gui.buttons.cancel"))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def t(self, key: str, **kwargs: object) -> str:
+        return self.localization.translate(key, **kwargs)
+
+    @staticmethod
+    def get_text(
+        localization: Localization,
+        prompt: str,
+        *,
+        secret: bool,
+        parent: QWidget | None,
+    ) -> tuple[bool, str]:
+        dialog = PromptDialog(localization, prompt, secret=secret, parent=parent)
+        result = dialog.exec() == QDialog.Accepted
+        return result, dialog.input_field.text()
 
 
 class InitialSetupDialog(QDialog):
@@ -434,10 +498,12 @@ class MainWindow(QMainWindow):
         self._library_busy = False
         self.app_directory = SteamAppDirectory()
         self._status_key = "gui.status.idle"
+        self.current_version = CURRENT_VERSION
 
         self.idler_ui: GuiIdlerUI | None = None
         self.idler_worker: IdlerWorker | None = None
         self.library_worker: LibraryFetchWorker | None = None
+        self.version_worker: VersionCheckWorker | None = None
 
         if self._needs_initial_setup():
             if not self._run_initial_setup():
@@ -449,6 +515,7 @@ class MainWindow(QMainWindow):
         self._update_status_summary()
         self._refresh_games_list()
         self._apply_translations()
+        self._start_version_check()
 
     def t(self, key: str, **kwargs: object) -> str:
         return self.localization.translate(key, **kwargs)
@@ -456,8 +523,11 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
-        root_layout = QHBoxLayout(central)
-        root_layout.setContentsMargins(16, 16, 16, 16)
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(16, 16, 16, 16)
+        outer_layout.setSpacing(12)
+
+        root_layout = QHBoxLayout()
         root_layout.setSpacing(16)
 
         main_panel = self._build_main_panel()
@@ -465,6 +535,12 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(main_panel, 2)
         root_layout.addWidget(settings_panel, 1)
+        outer_layout.addLayout(root_layout, 1)
+
+        self.footer_label = QLabel()
+        self.footer_label.setAlignment(Qt.AlignRight)
+        self.footer_label.setObjectName("footerLabel")
+        outer_layout.addWidget(self.footer_label)
         self._apply_app_styles()
 
     def _build_main_panel(self) -> QWidget:
@@ -502,12 +578,8 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         self.start_button = QPushButton()
-        self.stop_button = QPushButton()
-        self.stop_button.setEnabled(False)
-        self.start_button.clicked.connect(self._start_idler)
-        self.stop_button.clicked.connect(self._stop_idler)
+        self.start_button.clicked.connect(self._handle_booster_button)
         controls.addWidget(self.start_button)
-        controls.addWidget(self.stop_button)
         controls.addStretch()
         layout.addLayout(controls)
 
@@ -591,6 +663,10 @@ class MainWindow(QMainWindow):
                 font-size: 18px;
                 font-weight: 600;
             }
+            QLabel#footerLabel {
+                font-size: 11px;
+                color: #9aa0a6;
+            }
             """
         )
 
@@ -606,7 +682,6 @@ class MainWindow(QMainWindow):
         self.timer_card_title.setText(self.t("gui.card.session").upper())
         self.timer_card_detail.setText(self.t("gui.card.session_detail"))
         self.start_button.setText(self.t("gui.buttons.start"))
-        self.stop_button.setText(self.t("gui.buttons.stop"))
         self.log_view.setPlaceholderText(self.t("gui.log.placeholder"))
         self.required_group_box.setTitle(self.t("gui.account.required_group"))
         self.optional_group_box.setTitle(self.t("gui.account.optional_group"))
@@ -632,11 +707,29 @@ class MainWindow(QMainWindow):
         self.game_library_btn.setText(self.t("gui.games.library"))
         self.games_hint.setText(self.t("gui.games.hint"))
         self._set_status(self._status_key)
+        self._update_controls()
+        if hasattr(self, "footer_label"):
+            self.footer_label.setText(
+                self.t("gui.footer.info", author="ajzak", version=self.current_version)
+            )
 
     def _set_status(self, key: str) -> None:
         self._status_key = key
         if hasattr(self, "status_label"):
             self.status_label.setText(self.t(key))
+
+    def _handle_booster_button(self) -> None:
+        if self._running:
+            self._stop_idler()
+        else:
+            self._start_idler()
+
+    def _update_controls(self) -> None:
+        busy = self._running
+        self.start_button.setText(self.t("gui.buttons.stop") if self._running else self.t("gui.buttons.start"))
+        if hasattr(self, "language_combo_widget"):
+            self.language_combo_widget.setDisabled(busy)
+        self._apply_tab_states()
 
     def _build_language_combo(self) -> QWidget:
         combo = QComboBox()
@@ -730,6 +823,7 @@ class MainWindow(QMainWindow):
         self.game_remove_btn = QPushButton()
         self.game_clear_btn = QPushButton()
         self.game_library_btn = QPushButton()
+        self.game_library_btn.setMinimumWidth(170)
         self.game_remove_btn.clicked.connect(self._remove_selected_games)
         self.game_clear_btn.clicked.connect(self._clear_games)
         self.game_library_btn.clicked.connect(self._handle_add_from_library)
@@ -890,7 +984,11 @@ class MainWindow(QMainWindow):
         if not payload:
             self._show_message(self.t("library.empty"), "gui.dialog.library_title")
             return
+        for app_id, name in payload:
+            self.app_directory.remember_name(app_id, name)
+        self._refresh_games_list()
         existing = set(self.config.games)
+        name_lookup = {app_id: name for app_id, name in payload}
         dialog = LibrarySelectionDialog(payload, existing, self.localization, self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -900,6 +998,9 @@ class MainWindow(QMainWindow):
             return
         added = 0
         for app_id in selected:
+            friendly_name = name_lookup.get(app_id)
+            if friendly_name:
+                self.app_directory.remember_name(app_id, friendly_name)
             if self.config.add_game(app_id):
                 added += 1
         if added:
@@ -909,7 +1010,11 @@ class MainWindow(QMainWindow):
         self._show_message(self.t("library.added", count=added), "gui.dialog.library_title")
 
     def _on_library_failed(self, reason: str) -> None:
-        self._show_error(self.t("library.error.request", reason=reason), "gui.dialog.library_title")
+        if reason == LIBRARY_ERROR_UNAUTHORIZED:
+            message = self.t("library.error.unauthorized")
+        else:
+            message = self.t("library.error.request", reason=reason)
+        self._show_error(message, "gui.dialog.library_title")
 
     def _set_library_busy(self, busy: bool) -> None:
         self._library_busy = busy
@@ -935,17 +1040,13 @@ class MainWindow(QMainWindow):
         )
         username = self.config.account.username or self.t("general.not_set")
         self.account_card_value.setText(username if account_ok else self.t("general.not_set"))
-        self.account_card_detail.setText(account_status)
+        self.account_card_detail.setText("" if account_ok else account_status)
 
         games_count = len(self.config.games)
-        self.games_card_value.setText(f"{games_count}/{MAX_SIMULTANEOUS_GAMES}")
-        if games_count:
-            preview = [self.app_directory.get_name(app_id) for app_id in self.config.games[:2]]
-            if games_count > 2:
-                preview.append("…")
-            self.games_card_detail.setText(", ".join(preview))
-        else:
-            self.games_card_detail.setText(self.t("gui.games.hint"))
+        self.games_card_value.setText(
+            self.t("gui.card.games_value", count=games_count, max=MAX_SIMULTANEOUS_GAMES)
+        )
+        self.games_card_detail.setText("")
 
     def _start_idler(self) -> None:
         if self.idler_worker and self.idler_worker.isRunning():
@@ -1002,37 +1103,58 @@ class MainWindow(QMainWindow):
         self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
 
     def _on_prompt_requested(self, prompt: str, secret: bool) -> None:
-        text, ok = QInputDialog.getText(
-            self,
-            self.t("gui.dialog.info"),
+        accepted, text = PromptDialog.get_text(
+            self.localization,
             prompt,
-            QLineEdit.Password if secret else QLineEdit.Normal,
+            secret=secret,
+            parent=self,
         )
-        if not ok:
-            text = ""
         if self.idler_ui:
-            self.idler_ui.submit_prompt_response(text.strip())
+            self.idler_ui.submit_prompt_response(text.strip(), cancelled=not accepted)
 
     def _on_clock_updated(self, message: str, final: bool) -> None:
         self.timer_card_value.setText(message)
 
     def _on_stop_prompted(self, prompt: str) -> None:
         self.stop_hint_label.setText(f"{prompt} {self.t('gui.stop.hint_suffix')}")
-        self.stop_button.setEnabled(True)
 
     def _set_running_state(self, running: bool) -> None:
         self._running = running
-        self.start_button.setDisabled(running)
-        self.stop_button.setEnabled(running)
-        self.language_combo_widget.setDisabled(running)
-        self._apply_tab_states()
+        self._update_controls()
         if not running:
             self.timer_card_value.setText("00:00:00")
             self.stop_hint_label.setText("")
 
     def _apply_tab_states(self) -> None:
-        self.account_tab.setDisabled(self._running)
-        self.games_tab.setDisabled(self._running or self._library_busy)
+        busy = self._running
+        self.account_tab.setDisabled(busy)
+        self.games_tab.setDisabled(busy or self._library_busy)
+
+    def _start_version_check(self) -> None:
+        if self.version_worker:
+            return
+        self.version_worker = VersionCheckWorker()
+        self.version_worker.update_available.connect(self._on_update_available)
+        self.version_worker.finished.connect(self._clear_version_worker)
+        self.version_worker.start()
+
+    def _clear_version_worker(self) -> None:
+        if self.version_worker:
+            self.version_worker.deleteLater()
+            self.version_worker = None
+
+    def _on_update_available(self, latest: str) -> None:
+        message = self.t("gui.version.update_available", latest=latest, current=self.current_version)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle(self.t("gui.version.update_title"))
+        box.setText(message)
+        open_button = box.addButton(self.t("gui.version.open_repo"), QMessageBox.AcceptRole)
+        close_button = box.addButton(self.t("gui.buttons.ok"), QMessageBox.RejectRole)
+        box.setDefaultButton(close_button)
+        box.exec()
+        if box.clickedButton() == open_button:
+            QDesktopServices.openUrl(QUrl(REPOSITORY_URL))
 
     def _show_message(self, text: str, title_key: str = "gui.dialog.info") -> None:
         QMessageBox.information(self, self.t(title_key), text)
@@ -1043,11 +1165,14 @@ class MainWindow(QMainWindow):
     def _format_game_label(self, app_id: int) -> str:
         return self.app_directory.format_entry(app_id)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI hook
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self.idler_ui:
             self.idler_ui.trigger_stop()
         if self.idler_worker and self.idler_worker.isRunning():
             self.idler_worker.wait(3000)
+        if self.version_worker and self.version_worker.isRunning():
+            self.version_worker.requestInterruption()
+            self.version_worker.wait(1000)
         event.accept()
 
     def _needs_initial_setup(self) -> bool:
@@ -1117,6 +1242,6 @@ def _apply_dark_theme(app: QApplication) -> None:
     app.setStyleSheet(_DARK_STYLE_SHEET)
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     run()
 

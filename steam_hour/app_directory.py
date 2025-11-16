@@ -12,6 +12,21 @@ CACHE_FILE = Path(".steam_apps_cache.json")
 CACHE_TTL_SECONDS = 60 * 60 * 24  # 24h
 
 
+def format_app_display(app_id: int, name: str | None) -> str:
+    """Return `Name (ID)` when the name is available, otherwise just the ID."""
+    app_id_str = str(app_id)
+    raw_name = (name or "").strip()
+    if not raw_name:
+        return app_id_str
+
+    suffix = f" ({app_id_str})"
+    if raw_name.endswith(suffix):
+        trimmed = raw_name[: -len(suffix)].rstrip(" -")
+        raw_name = trimmed or raw_name
+
+    return f"{raw_name} ({app_id_str})"
+
+
 class SteamAppDirectory:
     def __init__(self, cache_path: Path | str | None = None, cache_ttl: int = CACHE_TTL_SECONDS) -> None:
         self.cache_path = Path(cache_path) if cache_path else CACHE_FILE
@@ -22,13 +37,10 @@ class SteamAppDirectory:
     def get_name(self, app_id: int) -> str:
         self._ensure_loaded()
         name = self._names.get(int(app_id))
-        return name or f"App {app_id}"
+        return (str(name).strip()) if name else ""
 
     def format_entry(self, app_id: int) -> str:
-        name = self.get_name(app_id)
-        if name.startswith("App "):
-            return str(app_id)
-        return f"{app_id} ({name})"
+        return format_app_display(app_id, self.get_name(app_id))
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -72,9 +84,24 @@ class SteamAppDirectory:
             names[app_id] = name
         if names:
             self._names = names
-            payload = {"updated_at": int(time.time()), "apps": names}
-            try:
-                self.cache_path.write_text(json.dumps(payload), encoding="utf-8")
-            except OSError:
-                pass
+            self._save_cache()
+
+    def remember_name(self, app_id: int, name: str | None) -> None:
+        normalized = (name or "").strip()
+        if not normalized:
+            return
+        self._names[int(app_id)] = normalized
+        self._save_cache()
+
+    def _save_cache(self) -> None:
+        if not self._names:
+            return
+        payload = {
+            "updated_at": int(time.time()),
+            "apps": {str(app_id): label for app_id, label in self._names.items()},
+        }
+        try:
+            self.cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError:
+            pass
 

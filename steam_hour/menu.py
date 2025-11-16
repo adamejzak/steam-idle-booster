@@ -3,7 +3,7 @@ from __future__ import annotations
 import getpass
 from typing import Callable
 
-from .app_directory import SteamAppDirectory
+from .app_directory import SteamAppDirectory, format_app_display
 from .config_manager import ConfigManager
 from .config_models import MAX_SIMULTANEOUS_GAMES, AppConfig
 from .library import LIBRARY_ERROR_UNAUTHORIZED, SteamLibraryError, SteamLibraryFetcher
@@ -71,7 +71,6 @@ class InteractiveMenu:
             "5": ("account.option.api_key", self.set_api_key),
             "6": ("account.option.steam_id", self.set_steam_id),
             "7": ("account.option.reset", self.reset_config),
-            "8": ("account.option.language", self.change_language),
         }
         pending_action: Callable[[], None] | None = None
         while True:
@@ -259,6 +258,9 @@ class InteractiveMenu:
             print(self.t("library.empty"))
             return
 
+        for entry in games:
+            self.app_directory.remember_name(entry.app_id, entry.name)
+
         existing_games = set(self.config.games)
         self._show_library_grid(games, existing_games)
         selection = input(self.t("library.prompt.selection")).strip()
@@ -271,6 +273,7 @@ class InteractiveMenu:
         added = 0
         for idx in indexes:
             app_id = games[idx].app_id
+            self.app_directory.remember_name(app_id, games[idx].name)
             if self.config.add_game(app_id):
                 added += 1
         if added:
@@ -327,7 +330,8 @@ class InteractiveMenu:
         rows = []
         for idx, game in enumerate(games, 1):
             marker = "*" if game.app_id in existing else " "
-            rows.append(f"{idx:>3}. [{marker}] {game.name} ({game.app_id})")
+            label = format_app_display(game.app_id, game.name)
+            rows.append(f"{idx:>3}. [{marker}] {label}")
         column_width = min(50, max(len(row) for row in rows) + 2)
         columns = 3
         print()
@@ -389,7 +393,6 @@ class InteractiveMenu:
             return False
 
     def _format_game_with_name(self, app_id: int) -> str:
-        name = self.app_directory.get_name(app_id)
-        return f"{name} ({app_id})"
+        return format_app_display(app_id, self.app_directory.get_name(app_id))
 
 
