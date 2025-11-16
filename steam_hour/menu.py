@@ -67,6 +67,7 @@ class InteractiveMenu:
             "6": self.set_steam_id,
             "7": self.reset_config,
         }
+        pending_action: Callable[[], None] | None = None
         while True:
             print(
                 "\n╔══════════════════════╗\n"
@@ -81,6 +82,15 @@ class InteractiveMenu:
             print("  6. Ustaw SteamID64")
             print("  7. Reset całej konfiguracji")
             print("  0. Powrót")
+            if pending_action:
+                try:
+                    pending_action()
+                except ValueError as exc:
+                    print(f"Błąd: {exc}")
+                except (KeyboardInterrupt, EOFError):
+                    print("\nPrzerwano. Powrót do menu głównego.")
+                    return
+                pending_action = None
             try:
                 choice = input("\nWybierz opcję: ").strip()
             except (KeyboardInterrupt, EOFError):
@@ -92,13 +102,7 @@ class InteractiveMenu:
             if not action:
                 print("Nieznana opcja.")
                 continue
-            try:
-                action()
-            except ValueError as exc:
-                print(f"Błąd: {exc}")
-            except (KeyboardInterrupt, EOFError):
-                print("\nPrzerwano. Powrót do menu głównego.")
-                return
+            pending_action = action
 
     def run_games_menu(self) -> None:
         actions: dict[str, Callable[[], None]] = {
@@ -108,6 +112,7 @@ class InteractiveMenu:
             "4": self.clear_games,
             "5": self.add_from_library,
         }
+        pending_action: Callable[[], None] | None = None
         while True:
             print(
                 "\n╔══════════════════════╗\n"
@@ -120,6 +125,15 @@ class InteractiveMenu:
             print("  4. Wyczyść listę gier")
             print("  5. Dodaj z biblioteki Steam")
             print("  0. Powrót")
+            if pending_action:
+                try:
+                    pending_action()
+                except ValueError as exc:
+                    print(f"Błąd: {exc}")
+                except (KeyboardInterrupt, EOFError):
+                    print("\nPrzerwano. Powrót do menu głównego.")
+                    return
+                pending_action = None
             try:
                 choice = input("\nWybierz opcję: ").strip()
             except (KeyboardInterrupt, EOFError):
@@ -131,13 +145,7 @@ class InteractiveMenu:
             if not action:
                 print("Nieznana opcja.")
                 continue
-            try:
-                action()
-            except ValueError as exc:
-                print(f"Błąd: {exc}")
-            except (KeyboardInterrupt, EOFError):
-                print("\nPrzerwano. Powrót do menu głównego.")
-                return
+            pending_action = action
 
     def show_account_summary(self) -> None:
         hidden_password = "*" * len(self.config.account.password)
@@ -196,6 +204,7 @@ class InteractiveMenu:
     def add_game(self) -> None:
         if len(self.config.games) >= MAX_SIMULTANEOUS_GAMES:
             raise ValueError("Lista gier jest pełna.")
+        self.show_games_summary()
         raw = input("Podaj AppID gry (liczba): ").strip()
         try:
             app_id = int(raw)
@@ -208,8 +217,12 @@ class InteractiveMenu:
         self.config.games.append(app_id)
         self.config_manager.save(self.config)
         print("Dodano AppID.")
+        self.show_games_summary()
 
     def remove_game(self) -> None:
+        self.show_games_summary()
+        if not self.config.games:
+            return
         raw = input("Podaj AppID do usunięcia: ").strip()
         try:
             app_id = int(raw)
@@ -220,6 +233,7 @@ class InteractiveMenu:
         self.config.games.remove(app_id)
         self.config_manager.save(self.config)
         print("Usunięto AppID.")
+        self.show_games_summary()
 
     def clear_games(self) -> None:
         confirm = input("Na pewno chcesz usunąć wszystkie gry? (tak/N): ").strip().lower()
@@ -229,6 +243,7 @@ class InteractiveMenu:
         self.config.clear_games()
         self.config_manager.save(self.config)
         print("Wyczyszczono listę gier.")
+        self.show_games_summary()
 
     def add_from_library(self) -> None:
         api_key = self.config.account.api_key
@@ -261,7 +276,8 @@ class InteractiveMenu:
             print("Biblioteka jest pusta.")
             return
 
-        self._show_library_grid(games)
+        existing_games = set(self.config.games)
+        self._show_library_grid(games, existing_games)
         selection = input("Podaj numery gier do dodania (np. 1,3,5) lub Enter aby anulować: ").strip()
         if not selection:
             print("Przerwano.")
@@ -276,6 +292,7 @@ class InteractiveMenu:
                 added += 1
         if added:
             self.config_manager.save(self.config)
+            self.show_games_summary()
         print(f"Dodano z biblioteki {added} gier.")
 
     def start_idler(self) -> None:
@@ -299,10 +316,12 @@ class InteractiveMenu:
         print("Do zobaczenia!")
         self._running = False
 
-    def _show_library_grid(self, games):
+    def _show_library_grid(self, games, existing_app_ids: set[int] | None = None):
+        existing = existing_app_ids or set()
         rows = []
         for idx, game in enumerate(games, 1):
-            rows.append(f"{idx:>3}. {game.name} ({game.app_id})")
+            marker = "*" if game.app_id in existing else " "
+            rows.append(f"{idx:>3}. [{marker}] {game.name} ({game.app_id})")
         column_width = min(50, max(len(row) for row in rows) + 2)
         columns = 3
         print()
@@ -310,6 +329,7 @@ class InteractiveMenu:
             chunk = rows[start : start + columns]
             line = "  ".join(entry.ljust(column_width) for entry in chunk)
             print(line.rstrip())
+        print("\n[*] Gra oznaczona gwiazdką jest już dodana do listy gier.")
 
     def _parse_selection(self, selection: str, max_index: int) -> list[int]:
         indexes: list[int] = []

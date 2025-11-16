@@ -1,21 +1,53 @@
 from __future__ import annotations
 
+import atexit
 import getpass
 import logging
+import signal
 import threading
 import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterable, List
 
+import gevent
 from steam.client import SteamClient
+from steam.core.msg import MsgProto
 from steam.enums import EPersonaState, EResult
+from steam.enums.emsg import EMsg
 from steam.guard import generate_twofactor_code
 
 from .config_models import MAX_SIMULTANEOUS_GAMES, AppConfig
 from .localization import Localization
 
 LOG = logging.getLogger("steam_hour.idler")
+CUSTOM_STATUS_TEXT = "ejzak.pl/hourboost"
+_ORIGINAL_LOGGING_SHUTDOWN = logging.shutdown
+_ORIGINAL_HANDLER_RELEASE = logging.Handler.release
+
+
+def _safe_logging_shutdown() -> None:
+    try:
+        _ORIGINAL_LOGGING_SHUTDOWN()
+    except RuntimeError as exc:
+        LOG.debug("Logging shutdown warning: %s", exc)
+
+
+try:
+    atexit.unregister(_ORIGINAL_LOGGING_SHUTDOWN)
+except (AttributeError, ValueError):
+    pass
+atexit.register(_safe_logging_shutdown)
+
+
+def _safe_handler_release(self) -> None:
+    try:
+        _ORIGINAL_HANDLER_RELEASE(self)
+    except RuntimeError as exc:
+        LOG.debug("Logging handler release warning: %s", exc)
+
+
+logging.Handler.release = _safe_handler_release
 
 
 class SteamRunError(RuntimeError):
@@ -55,7 +87,7 @@ class SteamIdler:
             raise SteamRunError(self.t("steam.interrupt")) from exc
         LOG.info("Ustawianie statusu Online i uruchamianie %d gier.", len(games))
         self._set_persona_online()
-        self.client.games_played(games)
+        self._set_games_played(games)
         print(self.t("steam.launched", games=games_preview))
 
         start_time = time.monotonic()
@@ -66,17 +98,40 @@ class SteamIdler:
             daemon=True,
         )
         clock_thread.start()
+
+        prompt_thread = threading.Thread(
+            target=self._await_stop_input,
+            args=(stop_event,),
+            daemon=True,
+        )
+        prompt_thread.start()
+
+        interrupted = False
+
+        def handle_sigint(_signum, _frame) -> None:
+            nonlocal interrupted
+            interrupted = True
+            stop_event.set()
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, handle_sigint)
+
         try:
-            print()
-            input(self.t("steam.prompt.stop"))
-            stop_event.set()
-        except KeyboardInterrupt:
-            stop_event.set()
-            print(f"\n{self.t('steam.interrupt')}")
+            try:
+                self._pump_gevent(stop_event)
+            except KeyboardInterrupt:
+                interrupted = True
+                stop_event.set()
         finally:
+            signal.signal(signal.SIGINT, original_sigint)
+            if interrupted:
+                print(f"\n{self.t('steam.interrupt')}")
+            if not interrupted:
+                prompt_thread.join()
             clock_thread.join()
             self.client.logout()
             print(self.t("steam.logout"))
+            self._shutdown_gevent_hub()
             LOG.info("Wylogowano ze Steam.")
 
     def _prepare_games(self, games: Iterable[int]) -> List[int]:
@@ -146,6 +201,15 @@ class SteamIdler:
                 set_persona(EPersonaState.Online)
                 return
 
+        change_status = getattr(self.client, "change_status", None)
+        if callable(change_status):
+            try:
+                change_status(persona_state=EPersonaState.Online)
+                return
+            except TypeError:
+                change_status(state=EPersonaState.Online)
+                return
+
         friends = getattr(self.client, "friends", None)
         if friends is not None:
             friend_set_persona = getattr(friends, "set_persona", None)
@@ -167,7 +231,52 @@ class SteamIdler:
         formatted = str(timedelta(seconds=total_seconds))
         print(f"\r{self.t('steam.clock', time=formatted)}   ")
 
+    def _await_stop_input(self, stop_event: threading.Event) -> None:
+        try:
+            print()
+            input(self.t("steam.prompt.stop"))
+        except (KeyboardInterrupt, EOFError):
+            pass
+        finally:
+            stop_event.set()
+
+    def _pump_gevent(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            gevent.sleep(0.2)
+
+    def _set_games_played(self, games: List[int]) -> None:
+        message = MsgProto(EMsg.ClientGamesPlayed)
+
+        tracked_ids: list[int] = []
+
+        for app_id in games:
+            entry = message.body.games_played.add()
+            entry.game_id = int(app_id)
+            tracked_ids.append(int(app_id))
+
+        self.client.send(message)
+
+        try:
+            self.client.current_games_played = tracked_ids
+        except AttributeError:
+            pass
+
     def t(self, key: str, **kwargs: object) -> str:
         return self.localization.translate(key, **kwargs)
+
+    def _shutdown_gevent_hub(self) -> None:
+        try:
+            hub = gevent.get_hub(default=False)
+        except Exception:
+            return
+        if not hub:
+            return
+        try:
+            hub.destroy(destroy_loop=True)
+        except TypeError:
+            hub.destroy(True)
+        except Exception as exc:
+            LOG.debug("Gevent hub shutdown issue: %s", exc)
+
 
 
