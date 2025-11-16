@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -10,7 +11,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     qdarktheme = None
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QCloseEvent, QPalette
+from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -44,6 +45,96 @@ from .library import SteamLibraryError, SteamLibraryFetcher
 from .localization import DEFAULT_LANGUAGE, Localization, SUPPORTED_LANGUAGES
 from .steam_idler import SteamIdler
 
+
+def _get_icon_path() -> Path | None:
+    """Returns the path to the application icon if it exists."""
+    base_path = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
+    
+    icon_path = base_path / "icon.ico"
+    if icon_path.exists():
+        return icon_path
+    
+    icon_path = Path("icon.ico")
+    if icon_path.exists():
+        return icon_path
+    
+    icon_path = Path(__file__).parent.parent / "icon.ico"
+    if icon_path.exists():
+        return icon_path
+    
+    return None
+
+
+_DARK_STYLE_SHEET = """
+QToolTip {
+    color: #f5f5f5;
+    background-color: #2b2b2b;
+    border: 1px solid #3d3d3d;
+    padding: 4px;
+    border-radius: 4px;
+}
+QPushButton {
+    background-color: #30343d;
+    border: 1px solid #3f434c;
+    padding: 6px 12px;
+    border-radius: 4px;
+}
+QPushButton:disabled {
+    background-color: #25262b;
+    border-color: #2d2f35;
+    color: #6f6f6f;
+}
+QPushButton:hover {
+    background-color: #3b404a;
+}
+QPushButton:pressed {
+    background-color: #2a2d35;
+}
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QComboBox,
+QListView,
+QTreeView,
+QSpinBox,
+QDoubleSpinBox {
+    background-color: #1f1f1f;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    selection-background-color: #3b7dd8;
+    selection-color: #f5f5f5;
+}
+QTabWidget::pane {
+    border: 1px solid #3a3a3a;
+    padding: 6px;
+}
+QTabBar::tab {
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-bottom-color: #3a3a3a;
+    padding: 6px 12px;
+}
+QTabBar::tab:selected {
+    background: #343434;
+}
+QScrollBar:vertical {
+    border: none;
+    background: #1b1b1b;
+    width: 12px;
+    margin: 16px 0 16px 0;
+}
+QScrollBar::handle:vertical {
+    background: #3d3d3d;
+    border-radius: 6px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #4a4a4a;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+"""
 
 class GuiIdlerUI(QObject):
     log_emitted = Signal(str)
@@ -332,6 +423,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Steam Idle Booster – GUI")
         self.resize(960, 640)
+        
+        icon_path = _get_icon_path()
+        if icon_path:
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.config_manager = ConfigManager("config.json")
         self.config = self.config_manager.config
         self.localization = Localization(self.config.language or None)
@@ -974,6 +1069,11 @@ class MainWindow(QMainWindow):
 def run() -> None:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     app = QApplication(sys.argv)
+    
+    icon_path = _get_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(str(icon_path)))
+    
     _apply_dark_theme(app)
     window = MainWindow()
     window.show()
@@ -981,27 +1081,40 @@ def run() -> None:
 
 
 def _apply_dark_theme(app: QApplication) -> None:
-    if qdarktheme is not None:
-        qdarktheme.setup_theme("dark")
-        return
-
-    print("qdarktheme nie jest zainstalowane – używam awaryjnego ciemnego motywu.", file=sys.stderr)
     app.setStyle("Fusion")
 
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(30, 30, 30))
-    palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
-    palette.setColor(QPalette.Base, QColor(20, 20, 20))
-    palette.setColor(QPalette.AlternateBase, QColor(35, 35, 35))
-    palette.setColor(QPalette.ToolTipBase, QColor(220, 220, 220))
-    palette.setColor(QPalette.ToolTipText, QColor(30, 30, 30))
-    palette.setColor(QPalette.Text, QColor(220, 220, 220))
-    palette.setColor(QPalette.Button, QColor(45, 45, 45))
-    palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
-    palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
-    palette.setColor(QPalette.Highlight, QColor(53, 132, 228))
+    foreground = QColor(222, 222, 222)
+    disabled_fg = QColor(140, 140, 140)
+    highlight = QColor(61, 125, 216)
+    window_bg = QColor(24, 24, 24)
+    base_bg = QColor(18, 18, 18)
+    button_bg = QColor(38, 38, 38)
+
+    palette.setColor(QPalette.Window, window_bg)
+    palette.setColor(QPalette.WindowText, foreground)
+    palette.setColor(QPalette.Base, base_bg)
+    palette.setColor(QPalette.AlternateBase, QColor(30, 30, 30))
+    palette.setColor(QPalette.ToolTipBase, QColor(45, 45, 45))
+    palette.setColor(QPalette.ToolTipText, foreground)
+    palette.setColor(QPalette.Text, foreground)
+    palette.setColor(QPalette.Button, button_bg)
+    palette.setColor(QPalette.ButtonText, foreground)
+    palette.setColor(QPalette.BrightText, QColor(255, 85, 85))
+    palette.setColor(QPalette.Highlight, highlight)
     palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+    palette.setColor(QPalette.Link, QColor(114, 159, 207))
+    palette.setColor(QPalette.LinkVisited, QColor(172, 146, 235))
+    palette.setColor(QPalette.Shadow, QColor(0, 0, 0))
+
+    palette.setColor(QPalette.Disabled, QPalette.Text, disabled_fg)
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, disabled_fg)
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, disabled_fg)
+    palette.setColor(QPalette.Disabled, QPalette.Highlight, QColor(55, 55, 55))
+    palette.setColor(QPalette.Disabled, QPalette.HighlightedText, QColor(170, 170, 170))
+
     app.setPalette(palette)
+    app.setStyleSheet(_DARK_STYLE_SHEET)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -7,3 +7,4 @@ config.json
 .venv312/
 build/
 dist/SteamIdleBoosterGUI.exe
+dist/SteamIdleBooster-win64.exe
