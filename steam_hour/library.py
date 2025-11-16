@@ -7,6 +7,7 @@ import requests
 
 STEAM_API_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/"
 STEAM_VANITY_URL = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/"
+LIBRARY_ERROR_UNAUTHORIZED = "LIBRARY_UNAUTHORIZED"
 
 
 class SteamLibraryError(RuntimeError):
@@ -36,8 +37,15 @@ class SteamLibraryFetcher:
             response = requests.get(STEAM_API_URL, params=params, timeout=self.timeout)
             response.raise_for_status()
             payload = response.json()
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 401:
+                raise SteamLibraryError(LIBRARY_ERROR_UNAUTHORIZED) from exc
+            raise SteamLibraryError(f"HTTP {status_code}: {exc}") from exc
         except requests.RequestException as exc:
             raise SteamLibraryError(str(exc)) from exc
+        except ValueError as exc:
+            raise SteamLibraryError("Invalid JSON in Steam response.") from exc
 
         games_raw = (payload.get("response") or {}).get("games") or []
         owned_games: List[OwnedGame] = []
@@ -60,8 +68,15 @@ class SteamLibraryFetcher:
             response = requests.get(STEAM_VANITY_URL, params=params, timeout=self.timeout)
             response.raise_for_status()
             payload = response.json()
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 401:
+                raise SteamLibraryError(LIBRARY_ERROR_UNAUTHORIZED) from exc
+            raise SteamLibraryError(f"HTTP {status_code}: {exc}") from exc
         except requests.RequestException as exc:
             raise SteamLibraryError(str(exc)) from exc
+        except ValueError as exc:
+            raise SteamLibraryError("Invalid JSON in Steam response.") from exc
         result = (payload.get("response") or {}).get("steamid")
         if not result:
             raise SteamLibraryError("Vanity URL not found.")

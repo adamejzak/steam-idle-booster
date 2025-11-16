@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Protocol
 
 import gevent
 from steam.client import SteamClient
@@ -17,6 +17,7 @@ from steam.enums import EPersonaState, EResult
 from steam.enums.emsg import EMsg
 from steam.guard import generate_twofactor_code
 
+from .app_directory import SteamAppDirectory
 from .config_models import MAX_SIMULTANEOUS_GAMES, AppConfig
 from .localization import Localization
 
@@ -50,6 +51,54 @@ def _safe_handler_release(self) -> None:
 logging.Handler.release = _safe_handler_release
 
 
+class IdlerUI(Protocol):
+    def log(self, message: str) -> None:
+        ...
+
+    def prompt_text(self, prompt: str) -> str:
+        ...
+
+    def prompt_secret(self, prompt: str) -> str:
+        ...
+
+    def start_stop_listener(self, prompt: str, stop_event: threading.Event) -> threading.Thread | None:
+        ...
+
+    def update_clock(self, message: str, *, final: bool = False) -> None:
+        ...
+
+
+class ConsoleIdlerUI:
+    def log(self, message: str) -> None:
+        print(message, flush=True)
+
+    def prompt_text(self, prompt: str) -> str:
+        return input(prompt)
+
+    def prompt_secret(self, prompt: str) -> str:
+        return getpass.getpass(prompt)
+
+    def start_stop_listener(self, prompt: str, stop_event: threading.Event) -> threading.Thread:
+        def wait_for_stop() -> None:
+            try:
+                print()
+                input(prompt)
+            except (KeyboardInterrupt, EOFError):
+                pass
+            finally:
+                stop_event.set()
+
+        thread = threading.Thread(target=wait_for_stop, daemon=True)
+        thread.start()
+        return thread
+
+    def update_clock(self, message: str, *, final: bool = False) -> None:
+        if final:
+            print(f"\r{message}   ")
+            return
+        print(f"\r{message}   ", end="", flush=True)
+
+
 class SteamRunError(RuntimeError):
     """Raised when the idler cannot continue."""
 
@@ -58,12 +107,17 @@ class SteamLoginError(RuntimeError):
     """Raised when Steam login fails."""
 
 
+class PromptCancelled(RuntimeError):
+    """Raised when a user cancels an interactive prompt."""
+
+
 class SteamIdler:
     def __init__(
         self,
         config: AppConfig,
         localization: Localization | None = None,
         credential_dir: str | Path | None = None,
+        ui: IdlerUI | None = None,
     ) -> None:
         self.config = config
         self.localization = localization or Localization(config.language or None)
@@ -71,16 +125,19 @@ class SteamIdler:
         self.credential_dir.mkdir(parents=True, exist_ok=True)
         self.client = SteamClient()
         self.client.set_credential_location(str(self.credential_dir))
+        self.ui: IdlerUI = ui or ConsoleIdlerUI()
+        self.app_directory = SteamAppDirectory()
 
     def start(self) -> None:
         games = self._prepare_games(self.config.games)
         if not games:
             raise SteamRunError(self.t("steam.error.no_games"))
 
-        games_preview = ", ".join(map(str, games))
-        print(f"\n{self.t('steam.preparing', count=len(games), games=games_preview)}")
+        games_preview = self._format_games_preview(games)
+        self.ui.log("")
+        self.ui.log(self.t("steam.preparing", count=len(games), games=games_preview))
         LOG.info("Logowanie do Steam jako %s", self.config.account.username)
-        print(self.t("steam.connecting"))
+        self.ui.log(self.t("steam.connecting"))
         try:
             self._login_loop()
         except KeyboardInterrupt as exc: 
@@ -88,7 +145,7 @@ class SteamIdler:
         LOG.info("Ustawianie statusu Online i uruchamianie %d gier.", len(games))
         self._set_persona_online()
         self._set_games_played(games)
-        print(self.t("steam.launched", games=games_preview))
+        self.ui.log(self.t("steam.launched", games=games_preview))
 
         start_time = time.monotonic()
         stop_event = threading.Event()
@@ -99,12 +156,7 @@ class SteamIdler:
         )
         clock_thread.start()
 
-        prompt_thread = threading.Thread(
-            target=self._await_stop_input,
-            args=(stop_event,),
-            daemon=True,
-        )
-        prompt_thread.start()
+        prompt_thread = self.ui.start_stop_listener(self.t("steam.prompt.stop"), stop_event)
 
         interrupted = False
 
@@ -125,14 +177,24 @@ class SteamIdler:
         finally:
             signal.signal(signal.SIGINT, original_sigint)
             if interrupted:
-                print(f"\n{self.t('steam.interrupt')}")
-            if not interrupted:
+                self.ui.log("")
+                self.ui.log(self.t("steam.interrupt"))
+            if prompt_thread and not interrupted:
                 prompt_thread.join()
             clock_thread.join()
             self.client.logout()
-            print(self.t("steam.logout"))
+            self.ui.log(self.t("steam.logout"))
             self._shutdown_gevent_hub()
             LOG.info("Wylogowano ze Steam.")
+
+    def authenticate_only(self) -> None:
+        """Log into Steam without starting the booster to refresh credentials."""
+        self.ui.log(self.t("steam.connecting"))
+        self._login_loop()
+        self.ui.log(self.t("steam.login.auth_only_success"))
+        self.client.logout()
+        self.ui.log(self.t("steam.logout"))
+        self._shutdown_gevent_hub()
 
     def _prepare_games(self, games: Iterable[int]) -> List[int]:
         unique: List[int] = []
@@ -159,7 +221,7 @@ class SteamIdler:
                 try:
                     two_factor_code = generate_twofactor_code(shared_secret)
                 except Exception as exc:
-                    LOG.warning("Nie udało się wygenerować kodu 2FA: %s", exc)
+                    LOG.warning("Failed to generate 2FA code: %s", exc)
                     two_factor_code = None
             result = self.client.login(
                 username=username,
@@ -168,24 +230,33 @@ class SteamIdler:
                 two_factor_code=two_factor_code,
             )
             if result == EResult.OK:
-                print(self.t("steam.login.success"))
+                self.ui.log(self.t("steam.login.success"))
                 return
             if result == EResult.AccountLogonDenied:
-                print(self.t("steam.login.email_needed"))
-                auth_code = input(self.t("steam.login.email_prompt")).strip()
+                self.ui.log(self.t("steam.login.email_needed"))
+                try:
+                    auth_code = self.ui.prompt_text(self.t("steam.login.email_prompt")).strip()
+                except PromptCancelled as exc:
+                    raise SteamRunError(self.t("steam.login.cancelled")) from exc
                 two_factor_code = None
                 continue
             if result == EResult.AccountLoginDeniedNeedTwoFactor:
-                print(self.t("steam.login.twofactor_needed"))
+                self.ui.log(self.t("steam.login.twofactor_needed"))
                 if not shared_secret:
-                    two_factor_code = input(self.t("steam.login.twofactor_prompt")).strip()
+                    try:
+                        two_factor_code = self.ui.prompt_text(self.t("steam.login.twofactor_prompt")).strip()
+                    except PromptCancelled as exc:
+                        raise SteamRunError(self.t("steam.login.cancelled")) from exc
                 else:
                     two_factor_code = generate_twofactor_code(shared_secret)
                 auth_code = None
                 continue
             if result == EResult.InvalidPassword:
-                print(self.t("steam.login.invalid_password_prompt"))
-                password = getpass.getpass(self.t("steam.login.invalid_password_input"))
+                self.ui.log(self.t("steam.login.invalid_password_prompt"))
+                try:
+                    password = self.ui.prompt_secret(self.t("steam.login.invalid_password_input"))
+                except PromptCancelled as exc:
+                    raise SteamRunError(self.t("steam.login.cancelled")) from exc
                 self.config.account.password = password
                 continue
             raise SteamLoginError(self.t("steam.login.error_generic", result=result.name))
@@ -221,24 +292,15 @@ class SteamIdler:
 
     def _run_clock(self, game_count: int, start_time: float, stop_event: threading.Event) -> None:
         effective_games = max(1, game_count)
-        print(self.t("steam.running"))
+        self.ui.log(self.t("steam.running"))
         while not stop_event.wait(1):
             total_seconds = int((time.monotonic() - start_time) * effective_games)
             formatted = str(timedelta(seconds=total_seconds))
-            print(f"\r{self.t('steam.clock', time=formatted)}   ", end="", flush=True)
+            self.ui.update_clock(self.t("steam.clock", time=formatted))
 
         total_seconds = int((time.monotonic() - start_time) * effective_games)
         formatted = str(timedelta(seconds=total_seconds))
-        print(f"\r{self.t('steam.clock', time=formatted)}   ")
-
-    def _await_stop_input(self, stop_event: threading.Event) -> None:
-        try:
-            print()
-            input(self.t("steam.prompt.stop"))
-        except (KeyboardInterrupt, EOFError):
-            pass
-        finally:
-            stop_event.set()
+        self.ui.update_clock(self.t("steam.clock", time=formatted), final=True)
 
     def _pump_gevent(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
@@ -277,6 +339,9 @@ class SteamIdler:
             hub.destroy(True)
         except Exception as exc:
             LOG.debug("Gevent hub shutdown issue: %s", exc)
+
+    def _format_games_preview(self, games: Iterable[int]) -> str:
+        return ", ".join(self.app_directory.format_entry(app_id) for app_id in games)
 
 
 

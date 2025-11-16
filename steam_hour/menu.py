@@ -3,9 +3,10 @@ from __future__ import annotations
 import getpass
 from typing import Callable
 
+from .app_directory import SteamAppDirectory
 from .config_manager import ConfigManager
 from .config_models import MAX_SIMULTANEOUS_GAMES, AppConfig
-from .library import SteamLibraryError, SteamLibraryFetcher
+from .library import LIBRARY_ERROR_UNAUTHORIZED, SteamLibraryError, SteamLibraryFetcher
 from .localization import Localization, SUPPORTED_LANGUAGES
 from .steam_idler import SteamIdler, SteamLoginError, SteamRunError
 
@@ -16,6 +17,7 @@ class InteractiveMenu:
         self.config_manager = config_manager
         self.config: AppConfig = config_manager.config
         self.localization = Localization(self.config.language or None)
+        self.app_directory = SteamAppDirectory()
         self.main_actions: dict[str, tuple[str, Callable[[], None]]] = {
             "1": ("menu.option.account", self.run_account_menu),
             "2": ("menu.option.games", self.run_games_menu),
@@ -139,7 +141,7 @@ class InteractiveMenu:
         if not self.config.games:
             print(f"\n{self.t('games.summary.empty')}")
             return
-        games = ", ".join(map(str, self.config.games))
+        games = ", ".join(self._format_game_with_name(app_id) for app_id in self.config.games)
         print(f"\n{self.t('games.summary.title')}")
         print(self.t("games.summary.count", count=len(self.config.games), max=MAX_SIMULTANEOUS_GAMES))
         print(self.t("games.summary.items", items=games))
@@ -197,7 +199,7 @@ class InteractiveMenu:
             raise ValueError(self.t("games.error.appid_exists"))
         self.config.games.append(app_id)
         self.config_manager.save(self.config)
-        print(self.t("games.added"))
+        print(self.t("games.added"), "-", self._format_game_with_name(app_id))
         self.show_games_summary()
 
     def remove_game(self) -> None:
@@ -213,7 +215,7 @@ class InteractiveMenu:
             raise ValueError(self.t("games.error.appid_missing"))
         self.config.games.remove(app_id)
         self.config_manager.save(self.config)
-        print(self.t("games.removed"))
+        print(self.t("games.removed"), "-", self._format_game_with_name(app_id))
         self.show_games_summary()
 
     def clear_games(self) -> None:
@@ -250,7 +252,7 @@ class InteractiveMenu:
         try:
             games = fetcher.fetch_owned_games()
         except SteamLibraryError as exc:
-            print(self.t("library.error.request", reason=exc))
+            self._handle_library_error(exc)
             return
 
         if not games:
@@ -362,8 +364,18 @@ class InteractiveMenu:
         try:
             return fetcher.resolve_steam_id(vanity)
         except SteamLibraryError as exc:
-            print(self.t("library.error.vanity_lookup", reason=exc))
+            if str(exc) == LIBRARY_ERROR_UNAUTHORIZED:
+                print(self.t("library.error.unauthorized"))
+            else:
+                print(self.t("library.error.vanity_lookup", reason=exc))
             return None
+
+    def _handle_library_error(self, exc: SteamLibraryError) -> None:
+        reason = str(exc)
+        if reason == LIBRARY_ERROR_UNAUTHORIZED:
+            print(self.t("library.error.unauthorized"))
+            return
+        print(self.t("library.error.request", reason=reason))
 
     def _execute_pending_action(self, action: Callable[[], None]) -> bool:
         try:
@@ -375,5 +387,9 @@ class InteractiveMenu:
         except (KeyboardInterrupt, EOFError):
             print(self.t("general.interrupted_back"))
             return False
+
+    def _format_game_with_name(self, app_id: int) -> str:
+        name = self.app_directory.get_name(app_id)
+        return f"{name} ({app_id})"
 
 
