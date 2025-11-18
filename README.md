@@ -27,14 +27,6 @@
 - **Language:** Python 3.11+
 - **Libraries:** `steam[client]`, `requests`, `PySide6`.
 
-## Screenshots
-
-- GUI main screen – `./docs/screenshot-gui-main.png`
-- GUI account settings – `./docs/screenshot-gui-account.png`
-- CLI menu with games list – `./docs/screenshot-cli-menu.png`
-
-*(Replace paths and file names with the actual ones in your `docs/` folder.)*
-
 ## Example usage
 
 Minimal examples from the project directory:
@@ -60,8 +52,7 @@ Full documentation (installation, configuration, FAQ) is available in the **GitH
 
 ## License
 
-There is currently no explicit license file in this repository.  
-It is recommended to add a `LICENSE` file (e.g. MIT, Apache-2.0) and update this section accordingly.
+This project is licensed under the **MIT License** – see the [`LICENSE`](./LICENSE) file for details.
 
 ## Author / Contact
 
