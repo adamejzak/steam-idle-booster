@@ -1,77 +1,70 @@
-# Steam Hour Booster (CLI)
+# Steam Idle Booster
 
-A lightweight Python CLI that lets you configure a Steam account and idle (simulate playing) up to 33 games at once to boost playtime.  
-The menu-driven workflow stores configuration in `config.json` and works on both Windows and Linux.
+<p align="center">
+  <strong>Steam Idle Booster</strong> – lightweight CLI + GUI tool for Steam that lets you idle (fake playing) up to <strong>33 games at the same time</strong> to farm playtime and trading cards.<br/>
+  <em>PL: Lekka aplikacja CLI + GUI do nabijania godzin w nawet 33 gry jednocześnie i zdobywania kart.</em>
+</p>
 
-> ⚠️ **Security:** credentials are stored in plain text. Keep the project folder private.
+<p align="center">
+  <img src="./readme/screenshot.png" alt="Steam Idle Booster GUI main screen" width="800">
+</p>
 
-## Requirements
+> ⚠️ **Security / Bezpieczeństwo:** credentials are stored in plain text in `config.json`.  
+> Do not share the app folder with other users (**nie udostępniaj katalogu z aplikacją innym osobom**).
 
-- Python 3.11+
-- Steam client installed with an active account
-- (Optional) `shared_secret` from the Steam mobile authenticator for automatic 2FA codes
+## Features
 
-## Installation
+- **Game idling** – simulates running selected games (up to 33 at once).
+- **Two interfaces**:
+  - **CLI** – text-based menu for configuring the account and games list,
+  - **GUI (PySide6)** – modern dark UI with cards, tabs and logs.
+- **Steam account configuration** – login, password, `shared_secret`, Web API key, SteamID64.
+- **Steam library import** – fetch games via Steam Web API and pick them from a list/grid.
+- **Multi-language UI** – interface available in **Polish (PL), English (EN), German (DE), Spanish (ES), Portuguese (PT) and Russian (RU)**.
 
-### Windows (PowerShell)
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+## Technologies
 
-### Linux/macOS (bash)
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+- **Language:** Python 3.11+
+- **Libraries:** `steam[client]`, `requests`, `PySide6`.
 
-## Running
+## Screenshots
 
-```bash
-python main.py
-```
+- GUI main screen – `./docs/screenshot-gui-main.png`
+- GUI account settings – `./docs/screenshot-gui-account.png`
+- CLI menu with games list – `./docs/screenshot-cli-menu.png`
 
-Menu features:
+*(Replace paths and file names with the actual ones in your `docs/` folder.)*
 
-1. View current account configuration
-2. Enter Steam login/password
-3. Set `shared_secret` for automatic 2FA codes
-4. Manage the AppID list (up to 33 entries) manually or by importing from your Steam library
-5. Start the script (logs into Steam and pretends to play selected games)
+## Example usage
 
-A `config.json` file is created on the first run.  
-Press Enter or `Ctrl+C` to stop the script.
+Minimal examples from the project directory:
 
-## Interface Language
+- **CLI:**
 
-At the first launch you can choose Polish or English. The choice is saved in `config.json` (`language`) and can be changed later in “Account configuration → Change interface language”.
+  ```bash
+  python main.py
+  ```
 
-## Importing Games from Your Steam Library
+- **Windows GUI (.exe):**
 
-To use “Add from Steam library”, you need:
+  Download the latest `SteamIdleBooster-win.exe` from [Releases](https://github.com/adamejzak/steam-idle-booster/releases/),  
+  place it in its own folder and run it by double-clicking. *(PL: najlepiej w osobnym katalogu, bo obok tworzy `config.json` i `.steam_credentials`.)*
 
-1. **Steam Web API Key** – obtain it from <https://steamcommunity.com/dev/apikey>.
-2. **SteamID64** – find it on <https://steamid.io> or let the app resolve it from your profile URL.
+More usage examples and detailed flows are available in the Wiki.
 
-Fill both values in “Account configuration”, then open “Games configuration → Add from Steam library” to see the games grid and pick AppIDs to add.
+## 📚 Documentation / Dokumentacja
 
-## AppID Tips
+Full documentation (installation, configuration, FAQ) is available in the **GitHub Wiki** (both **PL** and **EN**):
 
-Every store URL contains the AppID, e.g. `https://store.steampowered.com/app/730` ⇒ `730`.  
-See `config.example.json` for the expected config structure.
+- [Open project Wiki](https://github.com/adamejzak/steam-idle-booster/wiki)
 
-## Security Notes
+## License
 
-- `config.json` stores credentials in plain text; protect the folder from other users.
-- If you use 2FA, add `shared_secret` (Base64) to avoid entering codes manually.
-- Email and app codes can still be entered interactively if you prefer not to store `shared_secret`.
+There is currently no explicit license file in this repository.  
+It is recommended to add a `LICENSE` file (e.g. MIT, Apache-2.0) and update this section accordingly.
 
-## Troubleshooting
+## Author / Contact
 
-Run the idler module directly to inspect logs:
-
-```bash
-python -m steam_hour.steam_idler
-```
+- Author: **ajzak**
+- GitHub: `https://github.com/adamejzak/steam-idle-booster`
+- For bugs and feature requests, please use the **Issues** tab in the repository. 

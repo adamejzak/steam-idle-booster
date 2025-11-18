@@ -6,7 +6,7 @@ from typing import Tuple
 import requests
 
 CURRENT_VERSION = "1.0.1"
-VERSION_CHECK_URL = "https://raw.githubusercontent.com/adamejzak/steam-idle-booster/refs/heads/gui/VERSION"
+VERSION_CHECK_URL = "https://raw.githubusercontent.com/adamejzak/steam-idle-booster/refs/heads/main/VERSION"
 REPOSITORY_URL = "https://github.com/adamejzak/steam-idle-booster/"
 
 _VERSION_SEPARATOR = re.compile(r"[.\-]")
