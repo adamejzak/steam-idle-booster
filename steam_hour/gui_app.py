@@ -104,6 +104,12 @@ QDoubleSpinBox {
     border-radius: 4px;
     selection-background-color: #3b7dd8;
     selection-color: #f5f5f5;
+    color: #f4f5f7;
+}
+QLineEdit::placeholder,
+QPlainTextEdit::placeholder,
+QTextEdit::placeholder {
+    color: #c7cfdd;
 }
 QTabWidget::pane {
     border: 1px solid #3a3a3a;
@@ -1231,10 +1237,13 @@ def _apply_dark_theme(app: QApplication) -> None:
     palette.setColor(QPalette.Link, QColor(114, 159, 207))
     palette.setColor(QPalette.LinkVisited, QColor(172, 146, 235))
     palette.setColor(QPalette.Shadow, QColor(0, 0, 0))
+    placeholder = QColor(186, 196, 212)
+    palette.setColor(QPalette.PlaceholderText, placeholder)
 
     palette.setColor(QPalette.Disabled, QPalette.Text, disabled_fg)
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, disabled_fg)
     palette.setColor(QPalette.Disabled, QPalette.WindowText, disabled_fg)
+    palette.setColor(QPalette.Disabled, QPalette.PlaceholderText, placeholder.darker(125))
     palette.setColor(QPalette.Disabled, QPalette.Highlight, QColor(55, 55, 55))
     palette.setColor(QPalette.Disabled, QPalette.HighlightedText, QColor(170, 170, 170))
 

@@ -40,7 +40,7 @@ Minimal examples from the project directory:
 - **Windows GUI (.exe):**
 
   Download the latest `SteamIdleBooster-win.exe` from [Releases](https://github.com/adamejzak/steam-idle-booster/releases/),  
-  place it in its own folder and run it by double-clicking. *(PL: najlepiej w osobnym katalogu, bo obok tworzy `config.json` i `.steam_credentials`.)*
+  place it in its own folder and run it by double-clicking. *(PL: najlepiej w osobnym katalogu, bo obok tworzy `config.json`.)*
 
 More usage examples and detailed flows are available in the Wiki.
 
